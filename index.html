@@ -238,6 +238,13 @@
     .paper-actions{width:100%;justify-content:flex-end;}
     nav.top-links{gap:14px;font-size:13.5px;}
   }
+
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;font-size:13px;z-index:300;display:none;max-width:90vw;text-align:center;border:1px solid var(--accent);}
+  .soon{font-size:12.5px;color:var(--muted);font-style:italic;white-space:nowrap;}
+  .ref-box{margin-top:18px;padding:14px;background:var(--tint);border:1px dashed var(--line);}
+  .ref-box label{display:block;font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;}
+  .ref-row{display:flex;gap:8px;flex-wrap:wrap;}
+  .ref-row input{flex:1;min-width:180px;border:1px solid var(--line);padding:9px 10px;font-size:13.5px;font-family:inherit;border-radius:var(--radius);}
 </style>
 </head>
 <body>
@@ -323,7 +330,7 @@
 <div class="overlay" id="checkoutOverlay">
   <div class="modal">
     <div class="modal-head">
-      <h3>Pay &amp; download</h3>
+      <h3 id="checkoutTitle">Pay &amp; download</h3>
       <button class="modal-close" onclick="closeCheckout()">&times;</button>
     </div>
     <div class="modal-body" id="checkoutBody"></div>
@@ -339,12 +346,15 @@
     </div>
     <div class="modal-body">
       <div class="field">
-        <label>Admin password</label>
-        <input type="password" id="adminPassInput" placeholder="Enter password" onkeydown="if(event.key==='Enter')tryAdminLogin()">
+        <label>Admin email</label>
+        <input type="email" id="adminEmailInput" placeholder="you@example.com" autocomplete="username">
       </div>
-      <div id="adminLoginError" style="color:var(--stamp);font-size:12.5px;margin-bottom:12px;display:none;">Incorrect password. Try again.</div>
+      <div class="field">
+        <label>Admin password</label>
+        <input type="password" id="adminPassInput" placeholder="Enter password" autocomplete="current-password" onkeydown="if(event.key==='Enter')tryAdminLogin()">
+      </div>
+      <div id="adminLoginError" style="color:var(--stamp);font-size:12.5px;margin-bottom:12px;display:none;">Wrong email or password.</div>
       <button class="btn full" onclick="tryAdminLogin()">Sign in</button>
-      <div class="status-line">Default password is <strong>ktu2026</strong> — change it once you're in, under Settings.</div>
     </div>
   </div>
 </div>
@@ -369,23 +379,22 @@
   </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
 <script>
 /* ---------------------------------------------------------
-   KTU PAST QUESTIONS — marketplace for all KTU programmes
-   All data lives in this browser's localStorage only.
-   There is no server: payment is a Mobile-Money-style
-   simulation (no real money moves), and uploaded PDFs are
-   stored as base64 in localStorage, so keep files small
-   (well under 2MB each) and remember this device/browser
-   is the only place the catalog and sales records live.
+   KTU PAST QUESTIONS
+   - Papers, programme photos and orders live in Supabase.
+   - The admin signs in with a Supabase email + password.
+   - Payments run through Paystack, via two Supabase Edge Functions
+     (paystack-init and get-download). No secret key is in this file.
 --------------------------------------------------------- */
-
-const LS_PAPERS = 'ktu_papers';
-const LS_ORDERS = 'ktu_orders';
-const LS_PURCHASES = 'ktu_purchases';
-const LS_ADMIN_PASS = 'ktu_admin_pass';
-const LS_ADMIN_SESSION = 'ktu_admin_session';
-const LS_PROG_IMAGES = 'ktu_programme_images';
+const SUPABASE_URL = 'https://hemnywhlnvyumzizkget.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_0Dm1AL_DVB6QvAENxDDmIQ_BSeiFyFO';
+const FN = SUPABASE_URL + '/functions/v1/';
+const LS_MY = 'ktu_my_orders';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /* Official KTU programme list (2025/2026 admissions poster), grouped
    exactly as the flyer lists them. Powers the Programme picker in
@@ -448,71 +457,67 @@ function programmeOptionsHtml(selected){
   ).join('');
 }
 
-function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+
 function ghc(n){ return 'GH₵ ' + Number(n).toFixed(2); }
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg, ms){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast._t);
+  if(ms) toast._t = setTimeout(()=>{ t.style.display='none'; }, ms);
+}
 
-/* ---------- storage helpers ---------- */
-function getPapers(){ return JSON.parse(localStorage.getItem(LS_PAPERS) || 'null') || seedPapers(); }
-function getProgImages(){ return JSON.parse(localStorage.getItem(LS_PROG_IMAGES) || '{}'); }
-function saveProgImage(programme, dataUrl){
-  const images = getProgImages();
-  images[programme] = dataUrl;
-  try{
-    localStorage.setItem(LS_PROG_IMAGES, JSON.stringify(images));
-    return true;
-  }catch(e){
-    alert('That image is too large for browser storage. Try a smaller photo (a few hundred KB is plenty).');
-    return false;
-  }
-}
-function removeProgImage(programme){
-  const images = getProgImages();
-  delete images[programme];
-  localStorage.setItem(LS_PROG_IMAGES, JSON.stringify(images));
-}
-function savePapers(list){
-  try{
-    localStorage.setItem(LS_PAPERS, JSON.stringify(list));
-    return true;
-  }catch(e){
-    alert('This PDF is too large for the browser to store. Try a file under 2MB, or split/compress the PDF first.');
-    return false;
-  }
-}
-function getOrders(){ return JSON.parse(localStorage.getItem(LS_ORDERS) || '[]'); }
-function saveOrders(list){ localStorage.setItem(LS_ORDERS, JSON.stringify(list)); }
-function getPurchases(){ return JSON.parse(localStorage.getItem(LS_PURCHASES) || '[]'); }
-function savePurchases(list){ localStorage.setItem(LS_PURCHASES, JSON.stringify(list)); }
+/* ---------- data (loaded from Supabase) ---------- */
+let PAPERS = [];
+let PHOTOS = {};        // programme -> public image url
+let PHOTO_PATHS = {};   // programme -> storage path
+function getPapers(){ return PAPERS; }
+function getProgImages(){ return PHOTOS; }
 
-function seedPapers(){
-  const demo = [
-    {id:uid(), courseCode:'ACC 201', courseTitle:'Financial Accounting II', programme:'BTech Accounting and Finance', level:'200', year:'2024', semester:'First', price:20, fileName:'acc201_2024.pdf', fileData:null},
-    {id:uid(), courseCode:'CSM 261', courseTitle:'Data Structures & Algorithms', programme:'BTech Computer Science', level:'200', year:'2023', semester:'Second', price:20, fileName:'csm261_2023.pdf', fileData:null},
-    {id:uid(), courseCode:'ELT 105', courseTitle:'Circuit Theory I', programme:'HND Electrical/Electronics Engineering', level:'100', year:'2024', semester:'First', price:20, fileName:'elt105_2024.pdf', fileData:null},
-  ];
-  localStorage.setItem(LS_PAPERS, JSON.stringify(demo));
-  return demo;
+function mapPaper(r){
+  return {id:r.id, courseCode:r.course_code, courseTitle:r.course_title, programme:r.programme,
+    level:r.level, semester:r.semester, year:r.year, price:Number(r.price), fileCount:r.file_count||0};
 }
+
+async function loadCatalog(){
+  const [p, ph] = await Promise.all([
+    sb.from('papers').select('*').order('course_code'),
+    sb.from('programme_photos').select('*')
+  ]);
+  if(p.error){
+    document.getElementById('catalogList').innerHTML =
+      '<div class="empty-note">Could not load the past questions. Check your internet connection and refresh.<br><small>'+escapeHtml(p.error.message)+'</small></div>';
+    return;
+  }
+  PAPERS = (p.data||[]).map(mapPaper);
+  PHOTOS = {}; PHOTO_PATHS = {};
+  (ph.data||[]).forEach(r=>{
+    PHOTO_PATHS[r.programme] = r.path;
+    PHOTOS[r.programme] = sb.storage.from('programme-photos').getPublicUrl(r.path).data.publicUrl;
+  });
+  refreshPublic();
+}
+function refreshPublic(){ renderBrowseColumns(); renderCatalog(); renderPurchases(); }
+
+/* ---------- this device's orders (so students can re-download) ---------- */
+function getMyOrders(){ try{ return JSON.parse(localStorage.getItem(LS_MY)||'[]'); }catch(e){ return []; } }
+function saveMyOrders(l){ localStorage.setItem(LS_MY, JSON.stringify(l)); }
+function paidOrderFor(paperId){ return getMyOrders().find(o=>o.paperId===paperId && o.paid); }
 
 /* ---------- catalog rendering ---------- */
 function populateProgFilter(){
-  const sel = document.getElementById('progFilter');
-  sel.innerHTML = '<option value="">All programmes</option>' + programmeOptionsHtml();
+  document.getElementById('progFilter').innerHTML = '<option value="">All programmes</option>' + programmeOptionsHtml();
 }
 
-function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
 function renderBrowseColumns(){
-  const papers = getPapers();
   const counts = {};
-  papers.forEach(p=>{ counts[p.programme] = (counts[p.programme]||0) + 1; });
+  PAPERS.forEach(p=>{ counts[p.programme] = (counts[p.programme]||0) + 1; });
   const activeVal = document.getElementById('progFilter').value;
-
   const itemHtml = (p)=>`<button class="browse-item${p===activeVal?' active':''}" onclick="filterByProgramme('${escapeHtml(p).replace(/'/g,"\\'")}')">
       <span>${escapeHtml(p)}</span>
       <span class="cnt">${counts[p]||0}</span>
     </button>`;
-
   document.getElementById('browseCS').innerHTML = CS_PROGRAMMES.map(itemHtml).join('');
   document.getElementById('browseOther').innerHTML = OTHER_PROGRAMMES.map(itemHtml).join('');
 }
@@ -526,14 +531,12 @@ function filterByProgramme(programme){
 }
 
 function renderCatalog(){
-  const papers = getPapers();
   const search = document.getElementById('searchBox').value.trim().toLowerCase();
   const prog = document.getElementById('progFilter').value;
   const level = document.getElementById('levelFilter').value;
   const semester = document.getElementById('semesterFilter').value;
-  const purchased = getPurchases();
 
-  let filtered = papers.filter(p=>{
+  const filtered = PAPERS.filter(p=>{
     if(prog && p.programme!==prog) return false;
     if(level && p.level!==level) return false;
     if(semester && p.semester!==semester) return false;
@@ -542,19 +545,20 @@ function renderCatalog(){
   });
 
   document.getElementById('catalogCount').textContent = filtered.length + (filtered.length===1?' paper':' papers');
-
   const list = document.getElementById('catalogList');
   if(filtered.length===0){
     list.innerHTML = '<div class="empty-note">No past questions match that search yet.</div>';
     return;
   }
-  const progImages = getProgImages();
   list.innerHTML = filtered.map(p=>{
-    const owned = purchased.includes(p.id);
-    const img = progImages[p.programme];
+    const img = PHOTOS[p.programme];
     const thumb = img
-      ? `<img class="prog-thumb-sm" src="${img}" alt="">`
+      ? `<img class="prog-thumb-sm" src="${escapeHtml(img)}" alt="">`
       : `<span class="prog-thumb-sm placeholder">${escapeHtml((p.programme||'?').slice(0,2).toUpperCase())}</span>`;
+    let action;
+    if(paidOrderFor(p.id)) action = `<button class="btn small accent" onclick="downloadOwned('${p.id}')">Download</button>`;
+    else if(!p.fileCount) action = `<span class="soon">Coming soon</span>`;
+    else action = `<button class="btn small" onclick="openCheckout('${p.id}')">Buy</button>`;
     return `<div class="paper-row">
       <div class="paper-code">${escapeHtml(p.courseCode)}</div>
       <div class="paper-main">
@@ -562,192 +566,226 @@ function renderCatalog(){
         <div class="paper-meta paper-meta-row">${thumb}<span>${escapeHtml(p.programme)} · Level ${escapeHtml(p.level)} · ${escapeHtml(p.semester||'')} Sem · ${escapeHtml(p.year)}</span></div>
       </div>
       <div class="paper-price">${ghc(p.price)}</div>
-      <div class="paper-actions">
-        ${owned
-          ? `<button class="btn small accent" onclick="downloadPaper('${p.id}')">Download</button>`
-          : `<button class="btn small" onclick="openCheckout('${p.id}')">Buy</button>`}
-      </div>
+      <div class="paper-actions">${action}</div>
     </div>`;
   }).join('');
 }
 
 function renderPurchases(){
-  const purchased = getPurchases();
-  const papers = getPapers();
-  const owned = papers.filter(p=>purchased.includes(p.id));
-  document.getElementById('purchasesCountLabel').textContent = owned.length + ' unlocked';
+  const orders = getMyOrders();
+  const paidCount = orders.filter(o=>o.paid).length;
+  document.getElementById('purchasesCountLabel').textContent = paidCount + ' unlocked';
   const badge = document.getElementById('purchaseCount');
-  if(owned.length>0){ badge.style.display='inline-flex'; badge.textContent = owned.length; } else { badge.style.display='none'; }
+  if(paidCount>0){ badge.style.display='inline-flex'; badge.textContent = paidCount; } else { badge.style.display='none'; }
 
-  const list = document.getElementById('purchasesList');
-  if(owned.length===0){
-    list.innerHTML = '<div class="empty-note">Nothing unlocked yet — buy a past question above and it will show up here for re-download anytime, on this device.</div>';
-    return;
-  }
-  list.innerHTML = owned.map(p=>`
+  const rows = orders.slice().reverse().map(o=>`
     <div class="purchase-row">
       <div>
-        <strong>${escapeHtml(p.courseCode)}</strong> — ${escapeHtml(p.courseTitle)}
-        <div class="paper-meta">${escapeHtml(p.programme)} · ${escapeHtml(p.year)}</div>
+        <strong>${escapeHtml(o.code)}</strong> — ${escapeHtml(o.title)}
+        <div class="paper-meta">${escapeHtml(o.programme||'')} · ${escapeHtml(o.year||'')}${o.paid?'':' · payment not confirmed yet'}</div>
       </div>
-      <button class="btn small accent" onclick="downloadPaper('${p.id}')">Download</button>
+      <button class="btn small ${o.paid?'accent':''}" onclick="fetchDownload('${escapeHtml(o.reference)}')">${o.paid?'Download':'Check payment'}</button>
     </div>`).join('');
+
+  document.getElementById('purchasesList').innerHTML =
+    (rows || '<div class="empty-note">Nothing unlocked yet — buy a past question above and it will show up here for re-download.</div>') +
+    `<div class="ref-box">
+       <label>Paid on another phone? Enter your Paystack payment reference to get the download again.</label>
+       <div class="ref-row"><input id="refInput" placeholder="e.g. KTU-1A2B3C4D5E6F7G8H"><button class="btn small" onclick="fetchDownload(document.getElementById('refInput').value.trim())">Get download</button></div>
+     </div>`;
 }
 
-/* ---------- checkout / payment simulation ---------- */
+/* ---------- checkout (Paystack) ---------- */
 let checkoutPaperId = null;
+function setModal(title, html){
+  document.getElementById('checkoutTitle').textContent = title;
+  document.getElementById('checkoutBody').innerHTML = html;
+  document.getElementById('checkoutOverlay').classList.add('show');
+}
+function closeCheckout(){ document.getElementById('checkoutOverlay').classList.remove('show'); checkoutPaperId = null; }
 
 function openCheckout(paperId){
-  checkoutPaperId = paperId;
-  const p = getPapers().find(x=>x.id===paperId);
+  const p = PAPERS.find(x=>x.id===paperId);
   if(!p) return;
-  document.getElementById('checkoutBody').innerHTML = `
+  checkoutPaperId = paperId;
+  setModal('Pay & download', `
     <div class="pay-summary">
       <span>${escapeHtml(p.courseCode)} — ${escapeHtml(p.courseTitle)}</span>
       <strong>${ghc(p.price)}</strong>
     </div>
-    <div class="field">
-      <label>Mobile Money network</label>
-      <div class="network-row">
-        <label class="network-opt mtn checked"><input type="radio" name="network" value="MTN" checked onclick="markNetwork(this)">MTN</label>
-        <label class="network-opt voda"><input type="radio" name="network" value="Vodafone" onclick="markNetwork(this)">Vodafone</label>
-        <label class="network-opt at"><input type="radio" name="network" value="AirtelTigo" onclick="markNetwork(this)">AirtelTigo</label>
-      </div>
-    </div>
-    <div class="field">
-      <label>Mobile Money number</label>
-      <input type="tel" id="momoNumber" placeholder="024 000 0000">
-    </div>
-    <button class="btn full accent" id="payBtn" onclick="processPayment()">Pay ${ghc(p.price)}</button>
-    <div class="status-line">This is a demo checkout — no real money is charged. See the note in your response for wiring up a live gateway.</div>
-  `;
-  document.getElementById('checkoutOverlay').classList.add('show');
-}
-function markNetwork(el){
-  document.querySelectorAll('.network-opt').forEach(o=>o.classList.remove('checked'));
-  el.closest('.network-opt').classList.add('checked');
-}
-function closeCheckout(){
-  document.getElementById('checkoutOverlay').classList.remove('show');
-  checkoutPaperId = null;
-}
-function processPayment(){
-  const phone = document.getElementById('momoNumber').value.trim();
-  if(phone.length < 9){ alert('Enter a valid Mobile Money number.'); return; }
-  const network = document.querySelector('input[name="network"]:checked').value;
-  const btn = document.getElementById('payBtn');
-  btn.disabled = true;
-  btn.textContent = 'Processing…';
-  setTimeout(()=>{
-    const p = getPapers().find(x=>x.id===checkoutPaperId);
-    const orders = getOrders();
-    orders.push({id:uid(), paperId:p.id, courseCode:p.courseCode, phone, network, amount:p.price, date:new Date().toISOString(), status:'paid'});
-    saveOrders(orders);
-    const purchased = getPurchases();
-    if(!purchased.includes(p.id)){ purchased.push(p.id); savePurchases(purchased); }
-    document.getElementById('checkoutBody').innerHTML = `
-      <div class="success-box">
-        <div class="tick">✓</div>
-        <h3 style="margin:0 0 6px;">Payment received</h3>
-        <p style="color:var(--muted);font-size:14px;margin:0 0 20px;">${escapeHtml(p.courseCode)} is unlocked for download.</p>
-        <button class="btn accent full" onclick="downloadPaper('${p.id}'); closeCheckout();">Download PDF</button>
-      </div>`;
-    renderCatalog();
-    renderPurchases();
-  }, 1400);
+    <div class="field"><label>Your email (Paystack sends your receipt here)</label>
+      <input type="email" id="payEmail" placeholder="you@example.com" value="${escapeHtml(localStorage.getItem('ktu_email')||'')}"></div>
+    <div class="field"><label>Phone number (optional)</label>
+      <input type="tel" id="payPhone" placeholder="024 000 0000" value="${escapeHtml(localStorage.getItem('ktu_phone')||'')}"></div>
+    <button class="btn full accent" id="payBtn" onclick="startPayment()">Pay ${ghc(p.price)}</button>
+    <div class="status-line" id="payStatus">You'll pay on Paystack's secure page with Mobile Money or card, then come straight back here to download.</div>`);
 }
 
-function downloadPaper(paperId){
-  const p = getPapers().find(x=>x.id===paperId);
+async function startPayment(){
+  const p = PAPERS.find(x=>x.id===checkoutPaperId);
   if(!p) return;
-  if(!p.fileData){
-    alert('No PDF has been uploaded for this paper yet. The admin needs to attach the file.');
-    return;
+  const email = document.getElementById('payEmail').value.trim();
+  const phone = document.getElementById('payPhone').value.trim();
+  const status = document.getElementById('payStatus');
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ status.textContent = 'Enter a valid email address.'; status.style.color='var(--stamp)'; return; }
+  if(location.protocol === 'file:'){ status.textContent = 'Payments only work on the live website, not when the file is opened from your computer.'; status.style.color='var(--stamp)'; return; }
+  const btn = document.getElementById('payBtn');
+  btn.disabled = true; btn.textContent = 'Connecting to Paystack…';
+  try{
+    const res = await fetch(FN+'paystack-init', {
+      method:'POST', headers:{'Content-Type':'application/json', 'apikey':SUPABASE_KEY},
+      body: JSON.stringify({paper_id:p.id, email, phone, callback_url: location.origin + location.pathname})
+    });
+    const out = await res.json().catch(()=>({}));
+    if(!res.ok || !out.authorization_url) throw new Error(out.error || 'Could not start the payment. Try again.');
+    localStorage.setItem('ktu_email', email); localStorage.setItem('ktu_phone', phone);
+    const orders = getMyOrders();
+    orders.push({reference:out.reference, paperId:p.id, code:p.courseCode, title:p.courseTitle, programme:p.programme, year:p.year, paid:false, ts:Date.now()});
+    saveMyOrders(orders);
+    window.location.href = out.authorization_url;
+  }catch(e){
+    btn.disabled = false; btn.textContent = 'Pay ' + ghc(p.price);
+    status.textContent = e.message; status.style.color = 'var(--stamp)';
   }
-  const a = document.createElement('a');
-  a.href = p.fileData;
-  a.download = p.fileName || (p.courseCode.replace(/\s+/g,'_') + '.pdf');
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
 }
 
-/* ---------- admin: hidden access via triple-tap logo ---------- */
+/* ---------- downloads (after payment is confirmed on the server) ---------- */
+function downloadOwned(paperId){
+  const o = paidOrderFor(paperId);
+  if(o) fetchDownload(o.reference);
+}
+
+async function fetchDownload(reference){
+  if(!reference){ return; }
+  setModal('Your download', '<p style="margin:0;text-align:center;color:var(--muted);">Checking your payment…</p>');
+  try{
+    const res = await fetch(FN+'get-download', {
+      method:'POST', headers:{'Content-Type':'application/json', 'apikey':SUPABASE_KEY},
+      body: JSON.stringify({reference})
+    });
+    const out = await res.json().catch(()=>({}));
+    if(!res.ok){
+      const msg = res.status===402 ? 'Your payment has not been confirmed yet. If you have paid, wait a minute and try again.' : (out.error || 'Something went wrong. Try again.');
+      setModal('Your download', `<p style="margin:0 0 16px;font-size:14px;">${escapeHtml(msg)}</p>
+        <button class="btn full" onclick="fetchDownload('${escapeHtml(reference)}')">Try again</button>`);
+      return;
+    }
+    // remember it on this device
+    const orders = getMyOrders();
+    let o = orders.find(x=>x.reference===reference);
+    if(!o){ o = {reference, paperId:out.paper?out.paper.id:'', code:out.paper?out.paper.course_code:'Paper', title:out.paper?out.paper.course_title:'', programme:out.paper?out.paper.programme:'', year:out.paper?out.paper.year:'', ts:Date.now()}; orders.push(o); }
+    o.paid = true; saveMyOrders(orders);
+    renderPurchases(); renderCatalog();
+    const files = out.files || [];
+    setModal('Payment received', `
+      <div class="success-box"><div class="tick">✓</div>
+        <p style="color:var(--muted);font-size:14px;margin:0 0 18px;">${escapeHtml(o.code)} is ready${files.length>1?' — '+files.length+' pages':''}.</p>
+        ${files.map((f,i)=>`<a class="btn accent full dl-link" style="display:block;text-align:center;text-decoration:none;margin-bottom:8px;" href="${escapeHtml(f.url)}">${files.length>1?'Download page '+(i+1):'Download'}</a>`).join('')}
+        <div class="status-line">Links work for 10 minutes. You can always get them again under “My downloads”.</div>
+      </div>`);
+    if(files.length===1){ const a=document.querySelector('.dl-link'); if(a) a.click(); }
+  }catch(e){
+    setModal('Your download', `<p style="margin:0 0 16px;font-size:14px;">Could not reach the server. Check your internet and try again.</p>
+      <button class="btn full" onclick="fetchDownload('${escapeHtml(reference)}')">Try again</button>`);
+  }
+}
+
+async function handlePaymentReturn(){
+  const q = new URLSearchParams(location.search);
+  const ref = q.get('reference') || q.get('trxref');
+  if(!ref) return;
+  history.replaceState(null, '', location.pathname + location.hash);
+  await fetchDownload(ref);
+}
+
+/* ---------- admin: hidden access (triple-tap the footer, or add #admin to the address) ---------- */
+let IS_ADMIN = false;
 let tapCount = 0, tapTimer = null;
 document.getElementById('footerTap').addEventListener('click', ()=>{
   tapCount++;
   clearTimeout(tapTimer);
   tapTimer = setTimeout(()=>{ tapCount = 0; }, 1600);
-  if(tapCount >= 3){
-    tapCount = 0;
-    if(sessionStorage.getItem(LS_ADMIN_SESSION)==='1'){ openAdminPanel(); }
-    else { openAdminLogin(); }
-  }
+  if(tapCount >= 3){ tapCount = 0; openAdminEntry(); }
 });
+function checkAdminHash(){ if(location.hash === '#admin') openAdminEntry(); }
+window.addEventListener('hashchange', checkAdminHash);
+
+async function checkAdmin(){
+  const {data, error} = await sb.rpc('is_admin');
+  IS_ADMIN = !error && data === true;
+  return IS_ADMIN;
+}
+async function openAdminEntry(){
+  const {data} = await sb.auth.getSession();
+  if(data && data.session && await checkAdmin()) openAdminPanel(); else openAdminLogin();
+}
 function openAdminLogin(){
   document.getElementById('adminLoginOverlay').classList.add('show');
   document.getElementById('adminLoginError').style.display='none';
   document.getElementById('adminPassInput').value='';
-  setTimeout(()=>document.getElementById('adminPassInput').focus(), 50);
+  setTimeout(()=>document.getElementById('adminEmailInput').focus(), 50);
 }
 function closeAdminLogin(){ document.getElementById('adminLoginOverlay').classList.remove('show'); }
-function tryAdminLogin(){
-  const stored = localStorage.getItem(LS_ADMIN_PASS) || 'ktu2026';
-  const entered = document.getElementById('adminPassInput').value;
-  if(entered === stored){
-    sessionStorage.setItem(LS_ADMIN_SESSION,'1');
-    closeAdminLogin();
-    openAdminPanel();
-  } else {
-    document.getElementById('adminLoginError').style.display='block';
+async function tryAdminLogin(){
+  const email = document.getElementById('adminEmailInput').value.trim();
+  const password = document.getElementById('adminPassInput').value;
+  const err = document.getElementById('adminLoginError');
+  err.style.display = 'none';
+  const {error} = await sb.auth.signInWithPassword({email, password});
+  if(error){ err.textContent = 'Wrong email or password.'; err.style.display='block'; return; }
+  if(!(await checkAdmin())){
+    await sb.auth.signOut();
+    err.textContent = "This account isn't an admin."; err.style.display='block'; return;
   }
+  closeAdminLogin();
+  openAdminPanel();
 }
-function adminLogout(){
-  sessionStorage.removeItem(LS_ADMIN_SESSION);
+async function adminLogout(){
+  await sb.auth.signOut();
+  IS_ADMIN = false;
   closeAdminPanel();
 }
-
 function openAdminPanel(){
   document.getElementById('adminOverlay').classList.add('show');
   switchAdminTab('papers');
 }
 function closeAdminPanel(){ document.getElementById('adminOverlay').classList.remove('show'); }
 
-let currentAdminTab = 'papers';
 function switchAdminTab(tab){
-  currentAdminTab = tab;
   document.querySelectorAll('.admin-tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===tab));
   const body = document.getElementById('adminPanelBody');
   if(tab==='papers') body.innerHTML = renderAdminPapers();
-  if(tab==='orders') body.innerHTML = renderAdminOrders();
-  if(tab==='settings') body.innerHTML = renderAdminSettings();
+  if(tab==='orders') renderAdminOrders();
+  if(tab==='settings') renderAdminSettings();
 }
 
 function renderAdminPapers(){
-  const papers = getPapers();
+  const papers = PAPERS;
   const rows = papers.map(p=>`
     <tr>
       <td><strong>${escapeHtml(p.courseCode)}</strong></td>
       <td>${escapeHtml(p.courseTitle)}</td>
       <td>${escapeHtml(p.programme)}</td>
       <td>${escapeHtml(p.level)}</td>
-      <td>${escapeHtml(p.year)}</td>
+      <td>${escapeHtml(p.semester)} · ${escapeHtml(p.year)}</td>
       <td>${ghc(p.price)}</td>
-      <td>${p.fileData ? '✓ uploaded' : '<span style="color:var(--stamp);">no file</span>'}</td>
-      <td><button class="icon-btn" onclick="deletePaper('${p.id}')">Delete</button></td>
+      <td>${p.fileCount ? '✓ '+p.fileCount+' file'+(p.fileCount===1?'':'s') : '<span style="color:var(--stamp);">no file</span>'}</td>
+      <td style="white-space:nowrap;">
+        <input type="file" id="af-${p.id}" accept="application/pdf,image/*" multiple style="display:none" onchange="addFilesTo('${p.id}', this)">
+        <button class="icon-btn" onclick="document.getElementById('af-${p.id}').click()">Add files</button>
+        <button class="icon-btn" onclick="deletePaper('${p.id}')">Delete</button>
+      </td>
     </tr>`).join('');
 
   const progCounts = {};
   papers.forEach(p=>{ progCounts[p.programme] = (progCounts[p.programme]||0) + 1; });
-  const progImages = getProgImages();
   let progIdx = 0;
-
   const renderProgLine = (p)=>{
     const inputId = 'progPhoto-' + (progIdx++);
     const safe = escapeHtml(p).replace(/'/g,"\\'");
-    const img = progImages[p];
+    const img = PHOTOS[p];
     const thumb = img
-      ? `<img class="prog-thumb-md" src="${img}" alt="">`
+      ? `<img class="prog-thumb-md" src="${escapeHtml(img)}" alt="">`
       : `<span class="prog-thumb-md placeholder">${escapeHtml(p.slice(0,2).toUpperCase())}</span>`;
     return `
     <div class="prog-line">
@@ -760,9 +798,6 @@ function renderAdminPapers(){
       </span>
     </div>`;
   };
-
-  // Split into two sides: Computer Science programmes on one side,
-  // every other programme (grouped as usual) on the other.
   const csProgrammes = [];
   const otherGroups = {};
   Object.entries(KTU_PROGRAMME_GROUPS).forEach(([group, list])=>{
@@ -771,107 +806,110 @@ function renderAdminPapers(){
     csProgrammes.push(...cs);
     if(rest.length) otherGroups[group] = rest;
   });
-
-  const csColumnHtml = `
-    <div class="prog-group">
-      <div class="prog-group-title">Computer Science</div>
-      ${csProgrammes.map(renderProgLine).join('')}
-    </div>`;
-
+  const csColumnHtml = `<div class="prog-group"><div class="prog-group-title">Computer Science</div>${csProgrammes.map(renderProgLine).join('')}</div>`;
   const otherColumnHtml = Object.entries(otherGroups).map(([group, list])=>`
-    <div class="prog-group">
-      <div class="prog-group-title">${escapeHtml(group)}</div>
-      ${list.map(renderProgLine).join('')}
-    </div>`).join('');
+    <div class="prog-group"><div class="prog-group-title">${escapeHtml(group)}</div>${list.map(renderProgLine).join('')}</div>`).join('');
 
   return `
-    <div class="warn-note">Uploaded PDFs are stored in this browser's storage only — they won't appear for admins on another device or browser. Keep each file under ~2MB.</div>
-
+    <div class="warn-note">Everything you upload is saved online, so students on any phone can see it. Photos are shrunk automatically before upload.</div>
     <div class="warn-note" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
       <span>Standard price is GH₵20 per download. New uploads default to this — use the button to update papers already in the catalog too.</span>
       <button class="btn small accent" onclick="setAllPricesTo20()">Set every paper to GH₵20</button>
     </div>
 
-    <h3 style="margin-top:0;">Upload by programme</h3>
-    <p style="margin:0 0 12px;font-size:12.5px;color:var(--muted);">Pick a programme once, choose level/semester/year/price for the batch, then select every PDF for that programme — each file becomes its own listing under it. Click "Upload here" next to any programme below to jump straight to it.</p>
-    <div class="bulk-row" id="bulkUploadRow">
-      <div class="admin-grid">
-        <div class="field"><label>Programme</label>
-          <select id="bulkProg">${programmeOptionsHtml()}</select>
-        </div>
-        <div class="field"><label>Level</label>
-          <select id="bulkLevel"><option>100</option><option>200</option><option>300</option><option>400</option><option>HND</option><option>Postgraduate</option></select>
-        </div>
-        <div class="field"><label>Semester</label>
-          <select id="bulkSemester"><option>First</option><option>Second</option></select>
-        </div>
-        <div class="field"><label>Year</label><input id="bulkYear" placeholder="e.g. 2024"></div>
-        <div class="field"><label>Price (GH₵), applied to all</label><input id="bulkPrice" type="number" min="0" step="0.5" value="20"></div>
-        <div class="field"><label>PDF files for this programme</label><input type="file" id="bulkFiles" accept="application/pdf" multiple></div>
-      </div>
-      <p style="margin:0 0 10px;font-size:12px;color:var(--muted);">Course code and title are guessed from each file name (e.g. <em>ACC201 Financial Accounting.pdf</em>) — fix any in the catalog table below if the guess is off; delete and re-add to correct it.</p>
-      <button class="btn accent" onclick="bulkUpload()">Upload all for this programme</button>
-    </div>
-
-    <h3>Programme coverage</h3>
-    <p style="margin:0 0 12px;font-size:12.5px;color:var(--muted);">Computer Science programmes on the left, every other programme on the right — with how many past questions are on file for each.</p>
+    <h3 style="margin-top:0;">Programme photos</h3>
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--muted);">Set a photo for each programme first — Computer Science on the left, every other programme on the right — with how many past questions are on file for each. Then upload that programme's papers below.</p>
     <div class="prog-overview-wrap">
       <div class="prog-overview">${csColumnHtml}</div>
       <div class="prog-overview">${otherColumnHtml}</div>
     </div>
 
+    <h3>Upload past questions by programme</h3>
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--muted);">Pick a programme once, choose level/semester/year/price for the batch, then select every file for that programme — each file becomes its own listing under it. Click "Upload here" next to any programme above to jump straight here with it pre-selected.</p>
+    <div class="bulk-row" id="bulkUploadRow">
+      <div class="admin-grid">
+        <div class="field"><label>Programme</label><select id="bulkProg">${programmeOptionsHtml()}</select></div>
+        <div class="field"><label>Level</label>
+          <select id="bulkLevel"><option>100</option><option>200</option><option>300</option><option>400</option><option>HND</option><option>Postgraduate</option></select></div>
+        <div class="field"><label>Semester</label><select id="bulkSemester"><option>First</option><option>Second</option></select></div>
+        <div class="field"><label>Year</label><input id="bulkYear" placeholder="e.g. 2025 for last year"></div>
+        <div class="field"><label>Price (GH₵), applied to all</label><input id="bulkPrice" type="number" min="0" step="0.5" value="20"></div>
+        <div class="field"><label>PDF or photos of the paper</label><input type="file" id="bulkFiles" accept="application/pdf,image/*" multiple></div>
+      </div>
+      <p style="margin:0 0 10px;font-size:12px;color:var(--muted);">Course code and title are guessed from each file name (e.g. <em>ACC201 Financial Accounting.pdf</em>). To fix one, delete it and add it again with the form below.</p>
+      <button class="btn accent" id="bulkBtn" onclick="bulkUpload()">Upload all for this programme</button>
+    </div>
+
     <h3>Add a single past question</h3>
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--muted);">Upload one PDF, or select every photo for that paper at once (page 1, page 2, ...) — they download together as one set, in the order you select them.</p>
     <div class="admin-grid">
       <div class="field"><label>Course code</label><input id="npCode" placeholder="e.g. ACC 201"></div>
       <div class="field"><label>Course title</label><input id="npTitle" placeholder="e.g. Financial Accounting II"></div>
-      <div class="field"><label>Programme</label>
-        <select id="npProg">${programmeOptionsHtml()}</select>
-      </div>
+      <div class="field"><label>Programme</label><select id="npProg">${programmeOptionsHtml()}</select></div>
       <div class="field"><label>Level</label>
-        <select id="npLevel"><option>100</option><option>200</option><option>300</option><option>400</option><option>HND</option><option>Postgraduate</option></select>
-      </div>
-      <div class="field"><label>Semester</label>
-        <select id="npSemester"><option>First</option><option>Second</option></select>
-      </div>
+        <select id="npLevel"><option>100</option><option>200</option><option>300</option><option>400</option><option>HND</option><option>Postgraduate</option></select></div>
+      <div class="field"><label>Semester</label><select id="npSemester"><option>First</option><option>Second</option></select></div>
       <div class="field"><label>Year</label><input id="npYear" placeholder="e.g. 2024"></div>
       <div class="field"><label>Price (GH₵)</label><input id="npPrice" type="number" min="0" step="0.5" value="20"></div>
-      <div class="field"><label>PDF file</label><input id="npFile" type="file" accept="application/pdf"></div>
+      <div class="field"><label>PDF, or photo(s) of each page</label><input id="npFile" type="file" accept="application/pdf,image/*" multiple></div>
     </div>
-    <button class="btn accent" onclick="addPaper()">Add to catalog</button>
+    <button class="btn accent" id="addBtn" onclick="addPaper()">Add to catalog</button>
 
     <h3>Full catalog (${papers.length})</h3>
+    <div style="overflow-x:auto;">
     <table class="admin-table">
-      <thead><tr><th>Code</th><th>Title</th><th>Programme</th><th>Level</th><th>Year</th><th>Price</th><th>File</th><th></th></tr></thead>
+      <thead><tr><th>Code</th><th>Title</th><th>Programme</th><th>Level</th><th>Semester</th><th>Price</th><th>Files</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="8" style="color:var(--muted);">No papers yet.</td></tr>'}</tbody>
-    </table>
+    </table></div>
   `;
 }
 
 function quickUploadFor(programme){
   const row = document.getElementById('bulkUploadRow');
   document.getElementById('bulkProg').value = programme;
-  row.scrollIntoView({behavior:'smooth', block:'center'});
+  if(row.scrollIntoView) row.scrollIntoView({behavior:'smooth', block:'center'});
   row.style.borderColor = 'var(--accent)';
   setTimeout(()=>{ row.style.borderColor = ''; }, 1200);
 }
 
-function handleProgPhoto(input, programme){
-  const file = input.files && input.files[0];
-  if(!file) return;
-  if(file.size > 1.5*1024*1024){
-    if(!confirm('That photo is fairly large and will use up browser storage space. Continue?')) { input.value=''; return; }
-  }
-  const reader = new FileReader();
-  reader.onload = ()=>{
-    if(saveProgImage(programme, reader.result)){
-      renderCatalog();
-      switchAdminTab('papers');
-    }
-  };
-  reader.readAsDataURL(file);
+/* ----- uploading ----- */
+function safeName(n){ return String(n).replace(/[^A-Za-z0-9._-]+/g,'_').slice(-80); }
+
+async function prepareFile(file, maxDim){
+  maxDim = maxDim || 1800;
+  if(!file.type || !file.type.startsWith('image/')) return file;
+  try{
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width*scale); c.height = Math.round(bmp.height*scale);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise(r=>c.toBlob(r, 'image/jpeg', 0.82));
+    if(!blob) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/,'') + '.jpg', {type:'image/jpeg'});
+  }catch(e){ return file; }
 }
 
-function addPaper(){
+async function attachFiles(paperId, files){
+  try{
+    const {data:last} = await sb.from('paper_files').select('position').eq('paper_id', paperId).order('position', {ascending:false}).limit(1);
+    let pos = (last && last[0] ? last[0].position : 0) + 1;
+    for(const f of files){
+      const prepared = await prepareFile(f);
+      const path = `${paperId}/${pos}-${safeName(prepared.name)}`;
+      const up = await sb.storage.from('papers').upload(path, prepared, {contentType: prepared.type || undefined, upsert:false});
+      if(up.error) throw up.error;
+      const ins = await sb.from('paper_files').insert({paper_id:paperId, path, file_name:prepared.name, position:pos});
+      if(ins.error){ await sb.storage.from('papers').remove([path]); throw ins.error; }
+      pos++;
+    }
+  } finally {
+    const {count} = await sb.from('paper_files').select('id', {count:'exact', head:true}).eq('paper_id', paperId);
+    await sb.from('papers').update({file_count: count||0}).eq('id', paperId);
+  }
+}
+
+async function addPaper(){
   const code = document.getElementById('npCode').value.trim();
   const title = document.getElementById('npTitle').value.trim();
   const programme = document.getElementById('npProg').value;
@@ -879,146 +917,157 @@ function addPaper(){
   const semester = document.getElementById('npSemester').value;
   const year = document.getElementById('npYear').value.trim();
   const price = parseFloat(document.getElementById('npPrice').value);
-  const fileInput = document.getElementById('npFile');
+  const files = Array.from(document.getElementById('npFile').files || []);
+  if(!code || !title || !year || isNaN(price)){ alert('Fill in course code, title, year and price.'); return; }
 
-  if(!code || !title || !year || isNaN(price)){
-    alert('Fill in course code, title, year and price.');
-    return;
+  const btn = document.getElementById('addBtn'); btn.disabled = true;
+  toast('Saving…');
+  const {data, error} = await sb.from('papers').insert({course_code:code, course_title:title, programme, level, semester, year, price}).select().single();
+  if(error){ toast('Could not save: ' + error.message, 6000); btn.disabled = false; return; }
+  try{
+    if(files.length){ toast('Uploading ' + files.length + ' file' + (files.length===1?'':'s') + '…'); await attachFiles(data.id, files); }
+    toast('Added ✓', 2500);
+  }catch(e){
+    toast('The paper was saved but the upload failed: ' + e.message + '. Use "Add files" on its row to try again.', 9000);
   }
-
-  const finish = (fileData, fileName)=>{
-    const papers = getPapers();
-    papers.push({id:uid(), courseCode:code, courseTitle:title, programme, level, semester, year, price, fileName, fileData});
-    if(savePapers(papers)){
-      populateProgFilter();
-      renderCatalog();
-      switchAdminTab('papers');
-    }
-  };
-
-  if(fileInput.files && fileInput.files[0]){
-    const file = fileInput.files[0];
-    if(file.size > 4*1024*1024){
-      if(!confirm('This PDF is over 4MB and may fail to save in browser storage. Continue anyway?')) return;
-    }
-    const reader = new FileReader();
-    reader.onload = ()=> finish(reader.result, file.name);
-    reader.readAsDataURL(file);
-  } else {
-    finish(null, null);
-  }
-}
-
-function bulkUpload(){
-  const files = document.getElementById('bulkFiles').files;
-  if(!files || files.length===0){ alert('Choose one or more PDF files first.'); return; }
-  const programme = document.getElementById('bulkProg').value;
-  const level = document.getElementById('bulkLevel').value;
-  const semester = document.getElementById('bulkSemester').value;
-  const year = document.getElementById('bulkYear').value.trim() || new Date().getFullYear().toString();
-  const price = parseFloat(document.getElementById('bulkPrice').value);
-  if(isNaN(price)){ alert('Set a price to apply to this batch.'); return; }
-
-  const papers = getPapers();
-  let remaining = files.length;
-  let anyTooBig = false;
-
-  Array.from(files).forEach(file=>{
-    if(file.size > 4*1024*1024) anyTooBig = true;
-    const reader = new FileReader();
-    reader.onload = ()=>{
-      const nameGuess = file.name.replace(/\.pdf$/i,'').replace(/[_-]+/g,' ');
-      papers.push({
-        id:uid(),
-        courseCode:(nameGuess.match(/^[A-Za-z]+\s?\d+/)||[nameGuess.slice(0,10)])[0].toUpperCase(),
-        courseTitle:nameGuess,
-        programme,
-        level,
-        semester,
-        year,
-        price,
-        fileName:file.name,
-        fileData:reader.result
-      });
-      remaining--;
-      if(remaining===0){
-        if(savePapers(papers)){
-          populateProgFilter();
-          renderCatalog();
-          switchAdminTab('papers');
-          if(anyTooBig) alert('Uploaded — but one or more files were over 4MB and may not have saved. Check the catalog list for a "no file" flag.');
-        }
-      }
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-function deletePaper(id){
-  if(!confirm('Delete this past question? This cannot be undone.')) return;
-  const papers = getPapers().filter(p=>p.id!==id);
-  savePapers(papers);
-  populateProgFilter();
-  renderCatalog();
+  await loadCatalog();
   switchAdminTab('papers');
 }
 
-function setAllPricesTo20(){
-  const papers = getPapers();
-  if(papers.length===0){ alert('No papers in the catalog yet.'); return; }
-  if(!confirm(`Set all ${papers.length} papers to GH₵20 each? This overwrites any existing prices.`)) return;
-  papers.forEach(p=>{ p.price = 20; });
-  if(savePapers(papers)){
-    renderCatalog();
-    switchAdminTab('papers');
-  }
+async function addFilesTo(paperId, input){
+  const files = Array.from(input.files || []);
+  if(!files.length) return;
+  try{
+    toast('Uploading ' + files.length + ' file' + (files.length===1?'':'s') + '…');
+    await attachFiles(paperId, files);
+    toast('Files added ✓', 2500);
+  }catch(e){ toast('Upload failed: ' + e.message, 8000); }
+  await loadCatalog();
+  switchAdminTab('papers');
 }
 
-function renderAdminOrders(){
-  const orders = getOrders().slice().reverse();
-  const revenue = getOrders().reduce((s,o)=>s+Number(o.amount),0);
-  const rows = orders.map(o=>`
+async function bulkUpload(){
+  const files = Array.from(document.getElementById('bulkFiles').files || []);
+  if(!files.length){ alert('Choose one or more files first.'); return; }
+  const programme = document.getElementById('bulkProg').value;
+  const level = document.getElementById('bulkLevel').value;
+  const semester = document.getElementById('bulkSemester').value;
+  const year = document.getElementById('bulkYear').value.trim() || String(new Date().getFullYear());
+  const price = parseFloat(document.getElementById('bulkPrice').value);
+  if(isNaN(price)){ alert('Set a price to apply to this batch.'); return; }
+  document.getElementById('bulkBtn').disabled = true;
+
+  let ok = 0, failed = [];
+  for(let i=0;i<files.length;i++){
+    const file = files[i];
+    toast(`Uploading ${i+1} of ${files.length}…`);
+    const nameGuess = file.name.replace(/\.[^.]+$/,'').replace(/[_-]+/g,' ').trim();
+    const code = ((nameGuess.match(/^[A-Za-z]+\s?\d+/)||[nameGuess.slice(0,10)])[0]).toUpperCase();
+    const {data, error} = await sb.from('papers').insert({course_code:code, course_title:nameGuess, programme, level, semester, year, price}).select().single();
+    if(error){ failed.push(file.name); continue; }
+    try{ await attachFiles(data.id, [file]); ok++; }catch(e){ failed.push(file.name); }
+  }
+  toast(`Uploaded ${ok} of ${files.length}` + (failed.length ? ` — failed: ${failed.join(', ')}` : ' ✓'), failed.length?10000:3000);
+  await loadCatalog();
+  switchAdminTab('papers');
+}
+
+async function deletePaper(id){
+  if(!confirm('Delete this past question? This cannot be undone.')) return;
+  const {data:files} = await sb.from('paper_files').select('path').eq('paper_id', id);
+  const {error} = await sb.from('papers').delete().eq('id', id);
+  if(error){
+    alert(error.code === '23503' ? "This paper already has orders, so it can't be deleted. (Orders are kept as sales records.)" : 'Could not delete: ' + error.message);
+    return;
+  }
+  if(files && files.length) await sb.storage.from('papers').remove(files.map(f=>f.path));
+  toast('Deleted', 2000);
+  await loadCatalog();
+  switchAdminTab('papers');
+}
+
+async function setAllPricesTo20(){
+  if(!PAPERS.length){ alert('No papers in the catalog yet.'); return; }
+  if(!confirm(`Set all ${PAPERS.length} papers to GH₵20 each? This overwrites any existing prices.`)) return;
+  const {error} = await sb.from('papers').update({price:20}).gte('price', 0);
+  if(error){ alert('Could not update: ' + error.message); return; }
+  toast('All prices set to GH₵20 ✓', 2500);
+  await loadCatalog();
+  switchAdminTab('papers');
+}
+
+async function handleProgPhoto(input, programme){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  try{
+    toast('Uploading photo…');
+    const prepared = await prepareFile(file, 700);
+    const slug = programme.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+    const ext = (prepared.type==='image/jpeg') ? 'jpg' : ((prepared.name.split('.').pop()||'img').toLowerCase().replace(/[^a-z0-9]/g,''));
+    const path = `${slug}-${Date.now()}.${ext}`;
+    const up = await sb.storage.from('programme-photos').upload(path, prepared, {contentType: prepared.type || undefined, upsert:false});
+    if(up.error) throw up.error;
+    const row = await sb.from('programme_photos').upsert({programme, path, updated_at:new Date().toISOString()}, {onConflict:'programme'});
+    if(row.error) throw row.error;
+    const old = PHOTO_PATHS[programme];
+    if(old) await sb.storage.from('programme-photos').remove([old]);
+    toast('Photo saved ✓', 2500);
+  }catch(e){ toast('Photo upload failed: ' + e.message, 8000); }
+  await loadCatalog();
+  switchAdminTab('papers');
+}
+
+async function renderAdminOrders(){
+  const body = document.getElementById('adminPanelBody');
+  body.innerHTML = '<p style="color:var(--muted);">Loading orders…</p>';
+  const {data, error} = await sb.from('orders').select('reference,phone,email,amount,status,created_at,papers(course_code)').order('created_at', {ascending:false}).limit(500);
+  if(error){ body.innerHTML = '<p style="color:var(--stamp);">Could not load orders: '+escapeHtml(error.message)+'</p>'; return; }
+  const paid = data.filter(o=>o.status==='paid');
+  const revenue = paid.reduce((s,o)=>s+Number(o.amount),0);
+  const rows = data.map(o=>`
     <tr>
-      <td>${escapeHtml(o.courseCode)}</td>
-      <td>${escapeHtml(o.network)}</td>
-      <td>${escapeHtml(o.phone)}</td>
+      <td>${escapeHtml(o.papers ? o.papers.course_code : '')}</td>
+      <td>${escapeHtml(o.email||'')}</td>
+      <td>${escapeHtml(o.phone||'')}</td>
       <td>${ghc(o.amount)}</td>
-      <td>${new Date(o.date).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+      <td>${escapeHtml(o.status)}</td>
+      <td>${new Date(o.created_at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
     </tr>`).join('');
-  return `
+  body.innerHTML = `
     <div class="stat-cards">
-      <div class="stat-card"><div class="num">${orders.length}</div><div class="lbl">Total sales</div></div>
+      <div class="stat-card"><div class="num">${paid.length}</div><div class="lbl">Paid sales</div></div>
       <div class="stat-card"><div class="num">${ghc(revenue)}</div><div class="lbl">Total revenue</div></div>
     </div>
-    <table class="admin-table">
-      <thead><tr><th>Paper</th><th>Network</th><th>Phone</th><th>Amount</th><th>Date</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" style="color:var(--muted);">No sales yet.</td></tr>'}</tbody>
-    </table>
-  `;
+    <div style="overflow-x:auto;"><table class="admin-table">
+      <thead><tr><th>Paper</th><th>Email</th><th>Phone</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" style="color:var(--muted);">No orders yet.</td></tr>'}</tbody>
+    </table></div>`;
 }
 
-function renderAdminSettings(){
-  return `
+async function renderAdminSettings(){
+  const body = document.getElementById('adminPanelBody');
+  const {data} = await sb.auth.getSession();
+  const email = data && data.session ? data.session.user.email : '';
+  body.innerHTML = `
     <h3 style="margin-top:0;">Change admin password</h3>
-    <div class="field" style="max-width:320px;">
-      <label>New password</label>
-      <input type="password" id="newAdminPass" placeholder="Enter a new password">
-    </div>
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--muted);">Signed in as <strong>${escapeHtml(email)}</strong></p>
+    <div class="field" style="max-width:320px;"><label>New password</label>
+      <input type="password" id="newAdminPass" placeholder="At least 8 characters"></div>
     <button class="btn" onclick="changeAdminPassword()">Save password</button>
-    <div class="status-line" style="text-align:left;margin-top:20px;">This demo checkout does not move real money. To take real payments, this page needs a small backend wired to a Ghanaian gateway (Paystack or Hubtel are the common ones), plus somewhere to store the catalog and orders outside this one browser.</div>
-  `;
+    <div class="status-line" style="text-align:left;margin-top:20px;">Payments are handled by Paystack. Paid orders appear in the Orders tab, and students get their download straight after paying.</div>`;
 }
-function changeAdminPassword(){
+async function changeAdminPassword(){
   const val = document.getElementById('newAdminPass').value;
-  if(val.length < 4){ alert('Choose a password at least 4 characters long.'); return; }
-  localStorage.setItem(LS_ADMIN_PASS, val);
+  if(val.length < 8){ alert('Choose a password at least 8 characters long.'); return; }
+  const {error} = await sb.auth.updateUser({password: val});
+  if(error){ alert('Could not change the password: ' + error.message); return; }
   alert('Admin password updated.');
-  document.getElementById('newAdminPass').value='';
+  document.getElementById('newAdminPass').value = '';
 }
 
 /* ---------- init ---------- */
 document.getElementById('searchBox').addEventListener('input', renderCatalog);
-document.getElementById('progFilter').addEventListener('change', renderCatalog);
+document.getElementById('progFilter').addEventListener('change', ()=>{ renderCatalog(); renderBrowseColumns(); });
 document.getElementById('levelFilter').addEventListener('change', renderCatalog);
 document.getElementById('semesterFilter').addEventListener('change', renderCatalog);
 [document.getElementById('checkoutOverlay'), document.getElementById('adminLoginOverlay'), document.getElementById('adminOverlay')].forEach(ov=>{
@@ -1026,8 +1075,14 @@ document.getElementById('semesterFilter').addEventListener('change', renderCatal
 });
 
 populateProgFilter();
-renderCatalog();
 renderPurchases();
+document.getElementById('catalogList').innerHTML = '<div class="empty-note">Loading past questions…</div>';
+(async ()=>{
+  await loadCatalog();
+  await handlePaymentReturn();
+  checkAdminHash();
+})();
+
 </script>
 </body>
 </html>
